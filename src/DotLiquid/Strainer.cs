@@ -2,23 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using DotLiquid.Exceptions;
+using DotLiquid.Util;
 
 namespace DotLiquid
 {
-    static class DictionaryExtensions
-    {
-        public static V TryAdd<K, V>(this IDictionary<K, V> dic, K key, Func<V> factory)
-        {
-            if (!dic.TryGetValue(key, out V found))
-                return dic[key] = factory();
-            return found;
-        }
-    }
-
     /// <summary>
     /// Strainer is the parent class for the filters system.
-    /// New filters are mixed into the strainer class which is then instanciated for each liquid template render run.
+    /// New filters are mixed into the strainer class which is then instantiated for each liquid template render run.
     ///
     /// One of the strainer's responsibilities is to keep malicious method calls out
     /// </summary>
@@ -72,12 +64,16 @@ namespace DotLiquid
         /// <param name="type"></param>
         public void Extend(Type type)
         {
-            // From what I can tell, calls to Extend should replace existing filters. So be it.
+            // Calls to Extend replace existing filters with the same number of params.
             var methods = type.GetRuntimeMethods().Where(m => m.IsPublic && m.IsStatic);
-            var methodNames = methods.Select(m => Template.NamingConvention.GetMemberName(m.Name));
-
-            foreach (var methodName in methodNames)
-                _methods.Remove(methodName);
+            foreach (var method in methods)
+            {
+                string methodName = Template.NamingConvention.GetMemberName(method.Name);
+                if  (_methods.Any(m => method.MatchesMethod(m)))
+                {
+                    _methods.Remove(methodName);
+                }
+            }
 
             foreach (MethodInfo methodInfo in methods)
             {
@@ -108,13 +104,19 @@ namespace DotLiquid
             return _methods.ContainsKey(method);
         }
 
+        /// <summary>
+        /// Invoke specified method with provided arguments
+        /// </summary>
+        /// <param name="method">The method token.</param>
+        /// <param name="args">The arguments for invoking the method</param>
+        /// <returns>The method's return.</returns>
         public object Invoke(string method, List<object> args)
         {
             method = Template.NamingConvention.GetMemberName(method);
 
             // First, try to find a method with the same number of arguments minus context which we set automatically further down.
             var methodInfo = _methods[method].FirstOrDefault(m => 
-                m.Item2.GetParameters().Where(p => p.ParameterType != typeof(Context)).Count() == args.Count);
+                m.Item2.GetNonContextParameterCount() == args.Count);
 
             // If we failed to do so, try one with max numbers of arguments, hoping
             // that those not explicitly specified will be taken care of
@@ -137,13 +139,40 @@ namespace DotLiquid
                     args.Add(parameterInfos[i].DefaultValue);
                 }
 
+            // Attempt conversions where required by type mismatch and possible by value range.
+            // These may be narrowing conversions (e.g. Int64 to Int32) when the actual range doesn't cause an overflow.
+            for (var argumentIndex = 0; argumentIndex < parameterInfos.Length; argumentIndex++)
+            {
+                if (args[argumentIndex] is IConvertible convertibleArg)
+                {
+                    var parameterType = parameterInfos[argumentIndex].ParameterType;
+                    if (convertibleArg.GetType() != parameterType
+                        && !parameterType
+#if NETSTANDARD1_3
+                            .GetTypeInfo()
+#endif
+                            .IsAssignableFrom(
+                                convertibleArg
+                                    .GetType()
+#if NETSTANDARD1_3
+                                    .GetTypeInfo()
+#endif
+                                    )
+                        )
+                    {
+                        args[argumentIndex] = Convert.ChangeType(convertibleArg, parameterType);
+                    }
+                }
+            }
+
             try
             {
                 return methodInfo.Item2.Invoke(methodInfo.Item1, args.ToArray());
             }
             catch (TargetInvocationException ex)
             {
-                throw ex.InnerException;
+                ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+                throw;
             }
         }
     }

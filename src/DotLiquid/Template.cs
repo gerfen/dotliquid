@@ -1,5 +1,7 @@
-﻿using System;
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -38,6 +40,11 @@ namespace DotLiquid
         public static IFileSystem FileSystem { get; set; }
 
         /// <summary>
+        /// Liquid syntax flag used for backward compatibility
+        /// </summary>
+        public static SyntaxCompatibility DefaultSyntaxCompatibilityLevel { get; set; } = SyntaxCompatibility.DotLiquid20;
+
+        /// <summary>
         /// Indicates if the default is thread safe
         /// </summary>
         public static bool DefaultIsThreadSafe { get; set; }
@@ -51,6 +58,8 @@ namespace DotLiquid
 
         private static readonly Dictionary<Type, Func<object, object>> SafeTypeTransformers;
         private static readonly Dictionary<Type, Func<object, object>> ValueTypeTransformers;
+        private static readonly ConcurrentDictionary<Type, Func<object, object>> ValueTypeTransformerCache;
+        private static readonly IDictionary<string, Type> SafelistedFilters = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
 
         static Template()
         {
@@ -60,6 +69,7 @@ namespace DotLiquid
             Tags = new Dictionary<string, Tuple<ITagFactory, Type>>();
             SafeTypeTransformers = new Dictionary<Type, Func<object, object>>();
             ValueTypeTransformers = new Dictionary<Type, Func<object, object>>();
+            ValueTypeTransformerCache = new ConcurrentDictionary<Type, Func<object, object>>();
         }
 
         /// <summary>
@@ -71,7 +81,7 @@ namespace DotLiquid
             where T : Tag, new()
         {
             var tagType = typeof(T);
-            Tags[name] = new Tuple<ITagFactory,Type>(new ActivatorTagFactory(tagType, name), tagType);
+            Tags[name] = new Tuple<ITagFactory, Type>(new ActivatorTagFactory(tagType, name), tagType);
         }
 
         /// <summary>
@@ -92,6 +102,25 @@ namespace DotLiquid
         {
             Tags.TryGetValue(name, out Tuple<ITagFactory, Type> result);
             return result.Item2;
+        }
+
+        /// <summary>
+        /// Indicates if the tag is a block that stops Liquid syntax processing
+        /// </summary>
+        /// <param name="name">The name of the tag</param>
+        /// <returns></returns>
+        internal static bool IsRawTag(string name)
+        {
+            Tags.TryGetValue(name, out Tuple<ITagFactory, Type> result);
+            return typeof(RawBlock)
+#if NETSTANDARD1_3
+                .GetTypeInfo()
+#endif
+                .IsAssignableFrom(result?.Item2
+#if NETSTANDARD1_3
+                    ?.GetTypeInfo()
+#endif
+                );
         }
 
         internal static Tag CreateTag(string name)
@@ -156,6 +185,7 @@ namespace DotLiquid
         public static void RegisterValueTypeTransformer(Type type, Func<object, object> func)
         {
             ValueTypeTransformers[type] = func;
+            ValueTypeTransformerCache.Clear();
         }
 
         /// <summary>
@@ -170,16 +200,18 @@ namespace DotLiquid
                 return transformer;
 
             // Check for interfaces
-            var interfaces = type.GetTypeInfo().ImplementedInterfaces;
-            foreach (var interfaceType in interfaces)
+            return ValueTypeTransformerCache.GetOrAdd(type, (key) =>
             {
-                if (ValueTypeTransformers.TryGetValue(interfaceType, out transformer))
-                    return transformer;
-                if (interfaceType.GetTypeInfo().IsGenericType && ValueTypeTransformers.TryGetValue(
-                    interfaceType.GetGenericTypeDefinition(), out transformer))
-                    return transformer;
-            }
-            return null;
+                foreach (var interfaceType in type.GetTypeInfo().ImplementedInterfaces)
+                {
+                    if (ValueTypeTransformers.TryGetValue(interfaceType, out transformer))
+                        return transformer;
+                    if (interfaceType.GetTypeInfo().IsGenericType && ValueTypeTransformers.TryGetValue(interfaceType.GetGenericTypeDefinition(), out transformer))
+                        return transformer;
+                }
+
+                return null;
+            });
         }
 
         /// <summary>
@@ -207,14 +239,54 @@ namespace DotLiquid
         }
 
         /// <summary>
+        /// Add the provided class to the safelist of classes that can be added by a Liquid Designer
+        /// </summary>
+        /// <param name="filterClassType">A class containing filter operations.</param>
+        /// <param name="alias">An alias for the class, if not provided the class' short name is used</param>
+        public static void SafelistFilter(Type filterClassType, string alias = null)
+        {
+            SafelistedFilters[alias ?? filterClassType.Name] = filterClassType;
+        }
+
+        /// <summary>
+        /// Checks if the given alias matches a whitelisted filter class.
+        /// </summary>
+        /// <param name="alias">An alias for a class containing filters.</param>
+        /// <param name="filterClassType">A class containing filter operations.</param>
+        public static bool TryGetSafelistedFilter(String alias, out Type filterClassType)
+        {
+            filterClassType = SafelistedFilters.ContainsKey(alias) ? SafelistedFilters[alias] : null;
+            return filterClassType != null;
+        }
+
+        /// <summary>
+        /// Return a collection of whitelisted filter aliases.
+        /// </summary>
+        public static ICollection<string> GetSafelistedFilterAliases()
+        {
+            return SafelistedFilters.Keys;
+        }
+
+        /// <summary>
         /// Creates a new <tt>Template</tt> object from liquid source code
         /// </summary>
-        /// <param name="source"></param>
+        /// <param name="source">The Liquid Template string</param>
         /// <returns></returns>
         public static Template Parse(string source)
         {
+            return Parse(source, Template.DefaultSyntaxCompatibilityLevel);
+        }
+
+        /// <summary>
+        /// Creates a new <tt>Template</tt> object from liquid source code
+        /// </summary>
+        /// <param name="source">The Liquid Template string</param>
+        /// <param name="syntaxCompatibilityLevel">The Liquid syntax flag used for backward compatibility</param>
+        /// <returns></returns>
+        public static Template Parse(string source, SyntaxCompatibility syntaxCompatibilityLevel)
+        {
             Template template = new Template();
-            template.ParseInternal(source);
+            template.ParseInternal(source, syntaxCompatibilityLevel);
             return template;
         }
 
@@ -227,6 +299,9 @@ namespace DotLiquid
         /// </summary>
         public Document Root { get; set; }
 
+        /// <summary>
+        /// Hash of user-defined, internally-available variables
+        /// </summary>
         public Hash Registers
         {
             get { return (_registers = _registers ?? new Hash()); }
@@ -269,15 +344,13 @@ namespace DotLiquid
         /// Parse source code.
         /// Returns self for easy chaining
         /// </summary>
-        /// <param name="source"></param>
-        /// <returns></returns>
-        internal Template ParseInternal(string source)
+        /// <param name="source">The source code.</param>
+        /// <param name="syntaxCompatibilityLevel">The Liquid syntax flag used for backward compatibility</param>
+        /// <returns>The template.</returns>
+        internal Template ParseInternal(string source, SyntaxCompatibility syntaxCompatibilityLevel)
         {
-            source = DotLiquid.Tags.Literal.FromShortHand(source);
-            source = DotLiquid.Tags.Comment.FromShortHand(source);
-
-            Root = new Document();
-            Root.Initialize(null, null, Tokenize(source));
+            this.Root = new Document();
+            this.Root.Initialize(tagName: null, markup: null, tokens: Tokenizer.Tokenize(source, syntaxCompatibilityLevel));
             return this;
         }
 
@@ -285,70 +358,89 @@ namespace DotLiquid
         /// Make this template instance thread safe.
         /// After this call, you can't use template owned variables anymore.
         /// </summary>
-        /// <returns></returns>
         public void MakeThreadSafe()
         {
             _isThreadSafe = true;
         }
 
         /// <summary>
-        /// Renders the template using default parameters and returns a string containing the result.
+        /// Renders the template using default parameters and the current culture and returns a string containing the result.
         /// </summary>
-        /// <returns></returns>
+        /// <returns>The rendering result as string.</returns>
         public string Render(IFormatProvider formatProvider = null)
         {
-            return Render(new RenderParameters(), formatProvider);
+            formatProvider = formatProvider ?? CultureInfo.CurrentCulture;
+            return Render(new RenderParameters(formatProvider));
         }
 
         /// <summary>
         /// Renders the template using the specified local variables and returns a string containing the result.
         /// </summary>
-        /// <param name="localVariables"></param>
-        /// <param name="formatProvider"></param>
-        /// <returns></returns>
-        public string Render(Hash localVariables, IFormatProvider formatProvider=null)
+        /// <param name="localVariables">Local variables.</param>
+        /// <param name="formatProvider">String formatting provider.</param>
+        /// <returns>The rendering result as string.</returns>
+        public string Render(Hash localVariables, IFormatProvider formatProvider = null)
         {
-            return Render(new RenderParameters
-                {
-                    LocalVariables = localVariables
-                }, formatProvider);
+            using (var writer = new StringWriter(formatProvider ?? CultureInfo.CurrentCulture))
+            {
+                return this.Render(
+                    writer: writer,
+                    parameters: new RenderParameters(writer.FormatProvider)
+                    {
+                        LocalVariables = localVariables
+                    });
+            }
+        }
+
+
+        /// <summary>
+        /// Renders the template using the specified parameters and returns a string containing the result.
+        /// </summary>
+        /// <param name="parameters">Render parameters.</param>
+        /// <returns>The rendering result as string.</returns>
+        public string Render(RenderParameters parameters)
+        {
+            using (var writer = new StringWriter(parameters.FormatProvider))
+            {
+                return this.Render(writer, parameters);
+            }
         }
 
         /// <summary>
         /// Renders the template using the specified parameters and returns a string containing the result.
         /// </summary>
+        /// <param name="writer">Render parameters.</param>
         /// <param name="parameters"></param>
-        /// <param name="formatProvider"></param>
-        /// <returns></returns>
-        public string Render(RenderParameters parameters, IFormatProvider formatProvider = null)
+        /// <returns>The rendering result as string.</returns>
+        public string Render(TextWriter writer, RenderParameters parameters)
         {
-            using (TextWriter writer = formatProvider == null ? new StringWriter() : new StringWriter(formatProvider))
-            {
-                Render(writer, parameters);
-                return writer.ToString();
-            }
+            if (writer == null)
+                throw new ArgumentNullException(paramName: nameof(writer));
+            if (parameters == null)
+                throw new ArgumentNullException(paramName: nameof(parameters));
+
+            this.RenderInternal(writer, parameters);
+            return writer.ToString();
         }
 
-        /// <summary>
-        /// Renders the template into the specified StreamWriter.
-        /// </summary>
-        /// <param name="result"></param>
-        /// <param name="parameters"></param>
-        public void Render(TextWriter result, RenderParameters parameters)
+        /// <inheritdoc />
+        private class StreamWriterWithFormatProvider : StreamWriter
         {
-            RenderInternal(result, parameters);
+            public StreamWriterWithFormatProvider(Stream stream, IFormatProvider formatProvider) : base(stream) => FormatProvider = formatProvider;
+
+            public override IFormatProvider FormatProvider { get; }
         }
 
         /// <summary>
         /// Renders the template into the specified Stream.
         /// </summary>
-        /// <param name="stream"></param>
-        /// <param name="parameters"></param>
+        /// <param name="stream">The stream to render into.</param>
+        /// <param name="parameters">The render parameters.</param>
         public void Render(Stream stream, RenderParameters parameters)
         {
             // Can't dispose this new StreamWriter, because it would close the
             // passed-in stream, which isn't up to us.
-            StreamWriter streamWriter = new StreamWriter(stream);
+            StreamWriter streamWriter = new StreamWriterWithFormatProvider(stream, parameters.FormatProvider);
             RenderInternal(streamWriter, parameters);
             streamWriter.Flush();
         }
@@ -391,36 +483,6 @@ namespace DotLiquid
                 if (!IsThreadSafe)
                     _errors = context.Errors;
             }
-        }
-
-        /// <summary>
-        /// Uses the <tt>Liquid::TemplateParser</tt> regexp to tokenize the passed source
-        /// </summary>
-        /// <param name="source"></param>
-        /// <returns></returns>
-        internal static List<string> Tokenize(string source)
-        {
-            if (string.IsNullOrEmpty(source))
-                return new List<string>();
-
-            // Trim leading whitespace.
-            source = Regex.Replace(source, string.Format(@"([ \t]+)?({0}|{1})-", Liquid.VariableStart, Liquid.TagStart), "$2", RegexOptions.None, RegexTimeOut);
-
-            // Trim trailing whitespace.
-            source = Regex.Replace(source, string.Format(@"-({0}|{1})(\n|\r\n|[ \t]+)?", Liquid.VariableEnd, Liquid.TagEnd), "$1", RegexOptions.None, RegexTimeOut);
-
-            List<string> tokens = Regex.Split(source, Liquid.TemplateParser).ToList();
-
-            // Trim any whitespace elements from the end of the array.
-            for (int i = tokens.Count - 1; i > 0; --i)
-                if (tokens[i] == string.Empty)
-                    tokens.RemoveAt(i);
-
-            // Removes the rogue empty element at the beginning of the array
-            if (tokens[0] != null && tokens[0] == string.Empty)
-                tokens.Shift();
-
-            return tokens;
         }
     }
 }

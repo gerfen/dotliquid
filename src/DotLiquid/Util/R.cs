@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -30,16 +30,11 @@ namespace DotLiquid.Util
         /// <param name="pattern">regex pattern</param>
         /// <param name="options">regex options; use the default (Compiled) unless there is a good reason not to</param>
         /// <returns>the regex</returns>
-        public static Regex C(
-            string pattern,
-#if CORE
-            // Compiled Regex are not available under .NET Core
-            RegexOptions options = RegexOptions.None
-#else
-            RegexOptions options = RegexOptions.Compiled
-#endif
-            )
+        public static Regex C(string pattern, RegexOptions options = RegexOptions.None)
         {
+#if !CORE
+            options = options | RegexOptions.Compiled;
+#endif
             var regex = new Regex(pattern, options, Template.RegexTimeOut);
 
             // execute once to trigger the lazy compilation (not strictly necessary, but avoids the first real execution taking a longer time than subsequent ones)
@@ -70,7 +65,7 @@ namespace DotLiquid.Util
         /// </summary>
         /// <param name="input">input text</param>
         /// <param name="pattern">regex pattern</param>
-        /// <returns>matches</returns>
+        /// <returns>A list of matches</returns>
         [Obsolete("Use Scan(string, Regex) instead.")]
         public static List<string> Scan(string input, string pattern)
         {
@@ -84,7 +79,7 @@ namespace DotLiquid.Util
         /// <param name="input"></param>
         /// <param name="pattern"></param>
         /// <param name="callback"></param>
-        /// <returns></returns>
+        [Obsolete("Use Scan(string, Regex) instead.")]
         public static void Scan(string input, string pattern, Action<string, string> callback)
         {
             foreach (Match match in Regex.Matches(input, pattern, RegexOptions.None, Template.RegexTimeOut))

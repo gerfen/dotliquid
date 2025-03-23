@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Globalization;
 using DotLiquid.Exceptions;
 using NUnit.Framework;
 
@@ -12,8 +14,8 @@ namespace DotLiquid.Tests.Tags
         {
             Tag tag = new Tag();
             tag.Initialize("tag", null, null);
-            Assert.AreEqual("tag", tag.Name);
-            Assert.AreEqual(string.Empty, tag.Render(new Context()));
+            Assert.That(tag.Name, Is.EqualTo("tag"));
+            Assert.That(tag.Render(new Context(CultureInfo.InvariantCulture)), Is.EqualTo(string.Empty));
         }
 
         [Test]
@@ -43,6 +45,13 @@ namespace DotLiquid.Tests.Tags
             Helper.AssertTemplateResult("", "{% comment %}{% endcomment %}");
             Helper.AssertTemplateResult("", "{%comment%}comment{%endcomment%}");
             Helper.AssertTemplateResult("", "{% comment %}comment{% endcomment %}");
+            //Helper.AssertTemplateResult("", "{% comment %} 1 {% comment %} 2 {% endcomment %} 3 {% endcomment %}");
+
+            Helper.AssertTemplateResult("", "{%comment%}{%blabla%}{%endcomment%}");
+            Helper.AssertTemplateResult("", "{% comment %}{% blabla %}{% endcomment %}");
+            Helper.AssertTemplateResult("", "{%comment%}{% endif %}{%endcomment%}");
+            Helper.AssertTemplateResult("", "{% comment %}{% endwhatever %}{% endcomment %}");
+            //Helper.AssertTemplateResult("", "{% comment %}{% raw %} {{%%%%}}  }} { {% endcomment -%} {% comment {% endraw %} {% endcomment %}");
 
             Helper.AssertTemplateResult("foobar", "foo{%comment%}comment{%endcomment%}bar");
             Helper.AssertTemplateResult("foobar", "foo{% comment %}comment{% endcomment %}bar");
@@ -73,15 +82,59 @@ namespace DotLiquid.Tests.Tags
         public void TestForWithNestedDictionary()
         {
             var dictionary = new Dictionary<string, object> { {
-            "People", 
+            "People",
             new Dictionary<string, object> {
                     { "ID1", new Dictionary<string, object>{ { "First", "Jane" }, { "Last", "Green" } } },
                     { "ID2", new Dictionary<string, object>{ { "First", "Mike" }, { "Last", "Doe" } } }
                 }
             } };
 
-            Helper.AssertTemplateResult("JaneMike", "{% for item in People %}{{ item.First }}{%endfor%}",
-                Hash.FromDictionary(dictionary));
+            // Validate that:
+            // 1) Nested dictionary properties can be accessed with or without specifying Value.
+            // 2) itemName can still be used as an alias for Key.
+            Helper.AssertTemplateResult(
+                expected: "ID1:Jane Green,ID2:Mike Doe,",
+                template: "{% for item in People %}{{ item.itemName }}:{{ item.First }} {{ item.Value.Last }},{%endfor%}",
+                localVariables: Hash.FromDictionary(dictionary),
+                syntax: SyntaxCompatibility.DotLiquid20);
+        }
+
+        [Test]
+        public void TestForWithNestedDictionary_DotLiquid22()
+        {
+            var dictionary = new Dictionary<string, object> { {
+                "People",
+                new Dictionary<string, object> {
+                        { "ID1", new Dictionary<string, object>{ { "First", "Jane" }, { "Last", "Green" } } },
+                        { "ID2", new Dictionary<string, object>{ { "First", "Mike" }, { "Last", "Doe" } } }
+                    }
+            } };
+
+            // Validate that:
+            // 1) Nested dictionary properties can only be accessed when specifying Value.
+            // 2) itemName is no longer supported as an alias for Key.
+            Helper.AssertTemplateResult(
+                expected: "ID1:Jane,ID2:Mike,",
+                template: "{% for item in People %}{{ item.itemName }}{{ item.First }}{{ item.Key }}:{{ item.Value.First }},{%endfor%}",
+                localVariables: Hash.FromDictionary(dictionary),
+                syntax: SyntaxCompatibility.DotLiquid22);
+        }
+
+        public class TestDictObject : Drop
+        {
+            public TestDictObject()
+            {
+                Testdict = new Dictionary<string, string>() { { "aa", "bb" }, { "dd", "ee" }, { "ff", "gg" } };
+            }
+            public Dictionary<string, string> Testdict { get; set; }
+        }
+
+        [Test]
+        public void TestDictionaryFor()
+        {
+            var template = Template.Parse("{%for item in bla.testdict %}{{ item[0] }}-{{ item[1]}} {%endfor%}");
+            var result = template.Render(Hash.FromAnonymousObject(new { bla = new TestDictObject() }));
+            Assert.That(result, Is.EqualTo("aa-bb dd-ee ff-gg "));
         }
 
         [Test]
@@ -150,6 +203,15 @@ namespace DotLiquid.Tests.Tags
         }
 
         [Test]
+        public void TestForElse()
+        {
+            // parity tests with https://github.com/Shopify/liquid/blob/master/test/integration/tags/for_tag_test.rb
+            Helper.AssertTemplateResult("+++", "{%for item in array%}+{%else%}-{%endfor%}", Hash.FromAnonymousObject(new { array = new[] { 1, 2, 3 } }));
+            Helper.AssertTemplateResult("-", "{%for item in array%}+{%else%}-{%endfor%}", Hash.FromAnonymousObject(new { array = new int[0] }));
+            Helper.AssertTemplateResult("-", "{%for item in array%}+{%else%}-{%endfor%}", Hash.FromAnonymousObject(new { array = (int[])null }));
+        }
+
+        [Test]
         public void TestLimiting()
         {
             Hash assigns = Hash.FromAnonymousObject(new { array = new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0 } });
@@ -164,6 +226,17 @@ namespace DotLiquid.Tests.Tags
         {
             Hash assigns = Hash.FromAnonymousObject(new { array = new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0 } });
             assigns["limit"] = 2;
+            assigns["offset"] = 2;
+            Helper.AssertTemplateResult("34", "{%for i in array limit: limit offset: offset %}{{ i }}{%endfor%}", assigns);
+        }
+
+        [Test]
+        public void TestDynamicVariableLimitingLong()
+        {
+            Hash assigns = Hash.FromAnonymousObject(new { array = new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0 } });
+
+            // NOTE(David Burg): Although using long type here for the sake of argument, not using a value necessitating as such extreme large iteration would lead to DOS / extreme execution time.
+            assigns["limit"] = 2L;
             assigns["offset"] = 2;
             Helper.AssertTemplateResult("34", "{%for i in array limit: limit offset: offset %}{{ i }}{%endfor%}", assigns);
         }
@@ -283,9 +356,9 @@ namespace DotLiquid.Tests.Tags
         [Test]
         public void TestContinueOutsideFor()
         {
-        var markup = "123{% continue %}456";
-        var expected = "123";
-        Helper.AssertTemplateResult(expected, markup);
+            var markup = "123{% continue %}456";
+            var expected = "123";
+            Helper.AssertTemplateResult(expected, markup);
         }
 
         [Test]
@@ -312,16 +385,25 @@ namespace DotLiquid.Tests.Tags
         [Test]
         public void TestCapture()
         {
-            Hash assigns = Hash.FromAnonymousObject(new { var = "content" });
-            Helper.AssertTemplateResult("content foo content foo ",
-                "{{ var2 }}{% capture var2 %}{{ var }} foo {% endcapture %}{{ var2 }}{{ var2 }}", assigns);
+            Helper.AssertTemplateResult(
+                expected: "content foo content foo ",
+                template: "{{ var2 }}{% capture var2 %}{{ var }} foo {% endcapture %}{{ var2 }}{{ var2 }}",
+                localVariables: Hash.FromAnonymousObject(new { var = "content" }));
+        }
+
+        [Test]
+        public void TestCaptureWithDashes()
+        {
+            Helper.AssertTemplateResult(
+                expected: "content foo content foo ",
+                template: "{{ var-2 }}{% capture var-2 %}{{ var }} foo {% endcapture %}{{ var-2 }}{{ var-2 }}",
+                localVariables: Hash.FromAnonymousObject(new { var = "content" }));
         }
 
         [Test]
         public void TestCaptureDetectsBadSyntax()
         {
-            Assert.Throws<SyntaxException>(() =>
-                Helper.AssertTemplateResult("content foo content foo ", "{{ var2 }}{% capture %}{{ var }} foo {% endcapture %}{{ var2 }}{{ var2 }}", Hash.FromAnonymousObject(new { var = "content" })));
+            Assert.Throws<SyntaxException>(() => Template.Parse("{{ var2 }}{% capture %}{{ var }} foo {% endcapture %}{{ var2 }}{{ var2 }}"));
         }
 
         [Test]
@@ -411,11 +493,11 @@ namespace DotLiquid.Tests.Tags
             // Example from the shopify forums
             const string code = "{% case collection.handle %}{% when 'menswear-jackets' %}{% assign ptitle = 'menswear' %}{% when 'menswear-t-shirts' %}{% assign ptitle = 'menswear' %}{% else %}{% assign ptitle = 'womenswear' %}{% endcase %}{{ ptitle }}";
             Template template = Template.Parse(code);
-            Assert.AreEqual("menswear", template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "menswear-jackets" } })));
-            Assert.AreEqual("menswear", template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "menswear-t-shirts" } })));
-            Assert.AreEqual("womenswear", template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "x" } })));
-            Assert.AreEqual("womenswear", template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "y" } })));
-            Assert.AreEqual("womenswear", template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "z" } })));
+            Assert.That(template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "menswear-jackets" } })), Is.EqualTo("menswear"));
+            Assert.That(template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "menswear-t-shirts" } })), Is.EqualTo("menswear"));
+            Assert.That(template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "x" } })), Is.EqualTo("womenswear"));
+            Assert.That(template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "y" } })), Is.EqualTo("womenswear"));
+            Assert.That(template.Render(Hash.FromAnonymousObject(new { collection = new { handle = "z" } })), Is.EqualTo("womenswear"));
         }
 
         [Test]
@@ -432,7 +514,7 @@ namespace DotLiquid.Tests.Tags
                 "{% case condition %}{% when 1 or 'string' or null %} its 1 or 2 or 3 {% when 4 %} its 4 {% endcase %}";
             Helper.AssertTemplateResult(" its 1 or 2 or 3 ", code2, Hash.FromAnonymousObject(new { condition = 1 }));
             Helper.AssertTemplateResult(" its 1 or 2 or 3 ", code2, Hash.FromAnonymousObject(new { condition = "string" }));
-            Helper.AssertTemplateResult(" its 1 or 2 or 3 ", code2, Hash.FromAnonymousObject(new { condition = (object) null }));
+            Helper.AssertTemplateResult(" its 1 or 2 or 3 ", code2, Hash.FromAnonymousObject(new { condition = (object)null }));
             Helper.AssertTemplateResult("", code2, Hash.FromAnonymousObject(new { condition = "something else" }));
         }
 
@@ -450,26 +532,26 @@ namespace DotLiquid.Tests.Tags
                 "{% case condition %}{% when 1, 'string', null %} its 1 or 2 or 3 {% when 4 %} its 4 {% endcase %}";
             Helper.AssertTemplateResult(" its 1 or 2 or 3 ", code2, Hash.FromAnonymousObject(new { condition = 1 }));
             Helper.AssertTemplateResult(" its 1 or 2 or 3 ", code2, Hash.FromAnonymousObject(new { condition = "string" }));
-            Helper.AssertTemplateResult(" its 1 or 2 or 3 ", code2, Hash.FromAnonymousObject(new { condition = (object) null }));
+            Helper.AssertTemplateResult(" its 1 or 2 or 3 ", code2, Hash.FromAnonymousObject(new { condition = (object)null }));
             Helper.AssertTemplateResult("", code2, Hash.FromAnonymousObject(new { condition = "something else" }));
         }
 
         [Test]
         public void TestAssign2()
         {
-            Assert.AreEqual("variable", Template.Parse("{% assign a = 'variable' %}{{a}}").Render());
+            Assert.That(Template.Parse("{% assign a = 'variable' %}{{a}}").Render(), Is.EqualTo("variable"));
         }
 
         [Test]
         public void TestAssignAnEmptyString()
         {
-            Assert.AreEqual("", Template.Parse("{% assign a = '' %}{{a}}").Render());
+            Assert.That(Template.Parse("{% assign a = '' %}{{a}}").Render(), Is.EqualTo(""));
         }
 
         [Test]
         public void TestAssignIsGlobal()
         {
-            Assert.AreEqual("variable", Template.Parse("{%for i in (1..2) %}{% assign a = 'variable'%}{% endfor %}{{a}}").Render());
+            Assert.That(Template.Parse("{%for i in (1..2) %}{% assign a = 'variable'%}{% endfor %}{{a}}").Render(), Is.EqualTo("variable"));
         }
 
         [Test]
@@ -546,6 +628,51 @@ namespace DotLiquid.Tests.Tags
         }
 
         [Test]
+        public void TestNestedDictionaries_DotLiquid22()
+        {
+            var classes = new Dictionary<string, object> {{
+                    "Classes", new Dictionary<string, object> {
+                        { "C1", new Dictionary<string, object>{
+                            { "Name", "English" },
+                            { "Level", "1" },
+                            { "Students", new Dictionary<string, object> {
+                                { "ID1", new Dictionary<string, object>{ { "First", "Jane" }, { "Last", "Green" } } },
+                                { "ID2", new Dictionary<string, object>{ { "First", "Mike" }, { "Last", "Doe" } } } } }
+                            }
+                        },
+                        { "C2", new Dictionary<string, object>{
+                            { "Name", "Maths" },
+                            { "Level", "2" },
+                            { "Students", new Dictionary<string, object> {
+                                { "ID3", new Dictionary<string, object>{ { "First", "Eric" }, { "Last", "Schmidt" } } },
+                                { "ID4", new Dictionary<string, object>{ { "First", "Bruce" }, { "Last", "Banner" } } } } }
+                            }
+                        }
+                    }
+            }};
+
+            // Check for-loops, verify that:
+            // - item.Key OR item[0] --> access the Key
+            // - item.Value.property OR item[1].property --> access values of a nested Hash/IDictionary
+            // - Pre 2.2 syntax (item.property> OR item.itemName) is ignored 
+            Helper.AssertTemplateResult(
+                expected: @"English 1: Jane Green (ID1), Mike Doe (ID2), 
+Maths 2: Eric Schmidt (ID3), Bruce Banner (ID4), 
+",
+                template: @"{% for class in Classes %}{{class.Name}}{{class.Value.Name}} {{class.Value.Level}}: {% for student in class.Value.Students %}{{ student[1].First }} {{ student[1].Last }} ({{ student[0] }}), {%endfor%}
+{%endfor%}",
+                localVariables: Hash.FromDictionary(classes),
+                syntax: SyntaxCompatibility.DotLiquid22);
+
+            // Check dot notation
+            Helper.AssertTemplateResult(
+                expected: "Eric Schmidt",
+                template: "{{ Classes.C2.Students.ID3.First }} {{ Classes.C2.Students.ID3.Last }}",
+                localVariables: Hash.FromDictionary(classes),
+                syntax: SyntaxCompatibility.DotLiquid22);
+        }
+
+        [Test]
         public void TestIfChanged()
         {
             Hash assigns = Hash.FromAnonymousObject(new { array = new[] { 1, 1, 2, 2, 3, 3 } });
@@ -553,6 +680,140 @@ namespace DotLiquid.Tests.Tags
 
             assigns = Hash.FromAnonymousObject(new { array = new[] { 1, 1, 1, 1 } });
             Helper.AssertTemplateResult("1", "{%for item in array%}{%ifchanged%}{{item}}{% endifchanged %}{%endfor%}", assigns);
+        }
+
+        [Test]
+        public void TestGetRegister()
+        {
+            var context = new Context(CultureInfo.InvariantCulture);
+            Tag.GetRegister<int>(context, "cycle");
+            Tag.GetRegister<object>(context, "for");
+            Assert.That(Tag.GetRegister<int>(context, "cycle"), Is.InstanceOf<IDictionary<string, int>>());
+        }
+
+        [Test]
+        public void TestLegacyKeyValueDrop()
+        {
+            var valueDictionary = new Dictionary<string, object> { { "First", "Jane" }, { "Last", "Green" } };
+            var drop = new DotLiquid.Tags.LegacyKeyValueDrop("key", valueDictionary);
+
+            // Confirm Key access
+            Assert.That(drop.BeforeMethod("0"), Is.EqualTo("key")); // Ruby syntax equivalent for Key
+            Assert.That(drop.BeforeMethod("Key"), Is.EqualTo("key")); // C# equivalent syntax
+            Assert.That(drop.BeforeMethod("itemName"), Is.EqualTo("key")); // non-standard alias for KeyValuePair.Key
+
+            // Confirm Value access
+            Assert.That(drop.BeforeMethod("1"), Is.SameAs(valueDictionary)); //Ruby syntax equivalent for KeyValuePair.Value
+            Assert.That(drop.BeforeMethod("Value"), Is.SameAs(valueDictionary)); // C# equivalent syntax
+
+            // Confirm Value.Property access
+            Assert.That(drop.BeforeMethod("First"), Is.EqualTo("Jane"));
+            Assert.That(drop.BeforeMethod("Last"), Is.EqualTo("Green"));
+            Assert.That(drop.BeforeMethod("UnknownProperty"), Is.Null);
+        }
+
+
+        [Test]
+        public void TestIncrement()
+        {
+            Helper.AssertTemplateResult(expected: "0", template: "{%increment port %}");
+            Helper.AssertTemplateResult(expected: "0 1", template: "{%increment port %} {%increment port%}");
+            Helper.AssertTemplateResult(
+                expected: "0 0 1 2 1",
+                template: "{%increment port %} {%increment starboard%} {%increment port %} {%increment port%} {%increment starboard %}");
+            Helper.AssertTemplateResult(expected: "1 2", template: "{%increment port %} {%increment port %}", localVariables: Hash.FromAnonymousObject(new { port = 1 }));
+        }
+
+        [Test]
+        public void TestIncrementIntBoundary()
+        {
+            Helper.AssertTemplateResult(
+                expected: "2147483647 2147483648",
+                template: "{%increment port %} {%increment port %}",
+                localVariables: Hash.FromAnonymousObject(new { port = int.MaxValue }));
+
+            Helper.AssertTemplateResult(
+                expected: "-2147483649 -2147483648",
+                template: "{%increment port %} {%increment port %}",
+                localVariables: Hash.FromAnonymousObject(new { port = Convert.ToInt64(int.MinValue) - 1 }));
+        }
+
+        [Test]
+        public void TestIncrementDoesNotAlterAssignVariables()
+        {
+            // Sample from https://shopify.dev/api/liquid/tags/variable-tags#increment
+            Helper.AssertTemplateResult(
+                expected: @"0
+                    1
+                    2
+                    10",
+                template: @"{% assign my_number = 10 -%}
+                    {%- increment my_number %}
+                    {% increment my_number %}
+                    {% increment my_number %}
+                    {{ my_number }}");
+        }
+
+        [Test]
+        public void TestIncrementDetectsBadSyntax()
+        {
+            Assert.Throws<SyntaxException>(() => Template.Parse("{% increment %}"));
+            // [@microalps] The following two tests work in Ruby Liquid unexpectedly but are not allowed in DotLiquid for the time being
+            // We may need to fix/change this in the future, but this test is here to ensure any change is intentional and thought through
+            // See https://github.com/Shopify/liquid/issues/1570
+            Assert.Throws<SyntaxException>(() => Template.Parse("{% increment var1 var2 %}"));
+            Assert.Throws<SyntaxException>(() => Template.Parse("{% increment product.qty %}"));
+        }
+
+        [Test]
+        public void TestDecrement()
+        {
+            Helper.AssertTemplateResult(expected: "9", template: "{%decrement port %}", localVariables: Hash.FromAnonymousObject(new { port = 10 }));
+            Helper.AssertTemplateResult(expected: "-1 -2", template: "{%decrement port %} {%decrement port%}");
+            Helper.AssertTemplateResult(
+                expected: "1 5 2 2 5",
+                template: "{%increment port %} {%increment starboard%} {%increment port %} {%decrement port%} {%decrement starboard %}",
+                localVariables: Hash.FromAnonymousObject(new { port = 1, starboard = 5 }));
+        }
+
+        [Test]
+        public void TestDecrementIntBoundary()
+        {
+            Helper.AssertTemplateResult(
+                expected: "-2147483649",
+                template: "{%decrement port %}",
+                localVariables: Hash.FromAnonymousObject(new { port = int.MinValue }));
+
+            Helper.AssertTemplateResult(
+                expected: "2147483647",
+                template: "{%decrement port %}",
+                localVariables: Hash.FromAnonymousObject(new { port = Convert.ToInt64(int.MaxValue) + 1 }));
+        }
+
+        [Test]
+        public void TestDecrementDoesNotAlterLocalVariables()
+        {
+            Helper.AssertTemplateResult(
+                expected: @"-1
+                    -2
+                    -3
+                    10",
+                template: @"{% assign my_number = 10 -%}
+                    {%- decrement my_number %}
+                    {% decrement my_number %}
+                    {% decrement my_number %}
+                    {{ my_number }}");
+        }
+
+        [Test]
+        public void TestDecrementDetectsBadSyntax()
+        {
+            Assert.Throws<SyntaxException>(() => Template.Parse("{% decrement %}"));
+            // [@microalps] The following two tests work in Ruby Liquid unexpectedly but are not allowed in DotLiquid for the time being
+            // We may need to fix/change this in the future, but this test is here to ensure any change is intentional and thought through
+            // See https://github.com/Shopify/liquid/issues/1570
+            Assert.Throws<SyntaxException>(() => Template.Parse("{% decrement var1 var2 %}"));
+            Assert.Throws<SyntaxException>(() => Template.Parse("{% decrement product.qty %}"));
         }
     }
 }

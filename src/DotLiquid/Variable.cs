@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -22,7 +22,7 @@ namespace DotLiquid
     /// </summary>
     public class Variable : IRenderable
     {
-        private static readonly Regex FilterParserRegex = R.B(R.Q(@"(?:{0}|(?:\s*(?!(?:{0}))(?:{1}|\S+)\s*)+)"), Liquid.FilterSeparator, Liquid.QuotedFragment);
+        private static readonly Regex FilterParserRegex = R.B(R.Q(@"(?:\s+|{0}|{1})+"), Liquid.QuotedFragment, Liquid.ArgumentSeparator);
         private static readonly Regex FilterArgRegex = R.B(R.Q(@"(?:{0}|{1})\s*({2})"), Liquid.FilterArgumentSeparator, Liquid.ArgumentSeparator, Liquid.QuotedFragment);
         private static readonly Regex QuotedAssignFragmentRegex = R.B(R.Q(@"\s*({0})(.*)"), Liquid.QuotedAssignFragment);
         private static readonly Regex FilterSeparatorRegex = R.B(R.Q(@"{0}\s*(.*)"), Liquid.FilterSeparator);
@@ -63,7 +63,17 @@ namespace DotLiquid
 
         public void Render(Context context, TextWriter result)
         {
-            string ToFormattedString(object o, IFormatProvider ifp) => o is IFormattable ifo ? ifo.ToString( null, ifp ) : o.ToString();
+            // NOTE(David Burg): The decimal type default string serialization behavior adds non-significant trailing zeroes
+            // to indicate the precision of the result.
+            // This is not a desirable default for Liquid as it confuses the users as to why '12.5 |times 10' becomes '125.0'.
+            // So we overwrite the default serialization behavior to specify a format with maximum significant precision.
+            // Decimal type has a maximum of 29 significant digits.
+            string ToFormattedString(object obj, IFormatProvider formatProvider) =>
+                (obj is decimal decimalValue)
+                    ? decimalValue.ToString(format: "0.#############################", provider: formatProvider)
+                    : obj is IFormattable ifo
+                        ? ifo.ToString(format: null, formatProvider: formatProvider)
+                        : (obj?.ToString() ?? "");
 
             object output = RenderInternal(context);
 
@@ -77,18 +87,17 @@ namespace DotLiquid
                 if (transformer != null)
                     output = transformer(output);
 
-                //treating Strings as IEnumerable, and was joining Chars in loop
-                string outputString = output as string;
+                // Treating Strings as IEnumerable, and was joining Chars in loop
+                if (!(output is string outputString))
+                {
+                    if (output is IEnumerable enumerable)
+                        outputString = string.Join(string.Empty, enumerable.Cast<object>().Select(o => ToFormattedString(o, result.FormatProvider)).ToArray());
+                    else if (output is bool)
+                        outputString = output.ToString().ToLower();
+                    else
+                        outputString = ToFormattedString(output, result.FormatProvider);
+                }
 
-              if (outputString != null) {}
-              else if (output is IEnumerable)
-                 outputString = string.Join(string.Empty, ((IEnumerable)output).Cast<object>().Select(o => ToFormattedString(o,result.FormatProvider)).ToArray());
-              else if (output is bool)
-                 outputString = output.ToString().ToLower();
-              else
-                 outputString = ToFormattedString(output,result.FormatProvider);
-
-            
                 result.Write(outputString);
             }
         }

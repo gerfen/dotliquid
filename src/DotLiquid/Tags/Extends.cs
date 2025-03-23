@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -11,7 +12,7 @@ namespace DotLiquid.Tags
     /// <summary>
     /// The Extends tag is used in conjunction with the Block tag to provide template inheritance.
     /// For further syntax and usage please refer to
-    /// <see cref="http://docs.djangoproject.com/en/dev/topics/templates/#template-inheritance"/>
+    /// <see href="http://docs.djangoproject.com/en/dev/topics/templates/#template-inheritance"/>
     /// </summary>
     /// <example>
     /// To see how Extends and Block can be used together, start by considering this example:
@@ -58,6 +59,7 @@ namespace DotLiquid.Tags
     /// </example>
     public class Extends : DotLiquid.Block
     {
+
         private static readonly Regex Syntax = R.B(@"^({0})", Liquid.QuotedFragment);
 
         private string _templateName;
@@ -95,8 +97,12 @@ namespace DotLiquid.Tags
             }
         }
 
+        /// <summary>
+        /// Extends blocks don't need to be terminated since they are not actually opened
+        /// </summary>
         protected override void AssertMissingDelimitation()
         {
+            // Method intentionally left empty. Extends blocks don't need to be terminated since they are not actually opened
         }
 
         public override void Render(Context context, TextWriter result)
@@ -139,7 +145,7 @@ namespace DotLiquid.Tags
                         ((List<Block>)context.Scopes[0]["extends"]).Add(block);
                     }
                 }
-                template.Render(result, RenderParameters.FromContext(context));
+                template.Render(result, RenderParameters.FromContext(context, result.FormatProvider));
             });
         }
 

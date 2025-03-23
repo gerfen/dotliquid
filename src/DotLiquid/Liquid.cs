@@ -1,10 +1,13 @@
-﻿using System.Resources;
+using System;
+using System.Resources;
+using System.Text.RegularExpressions;
+using System.Threading;
 using DotLiquid.Util;
 
 namespace DotLiquid
 {
     /// <summary>
-    /// Utiliy containing regexes for Liquid syntax and registering default tags and blocks
+    /// Utility containing regexes for Liquid syntax and registering default tags and blocks
     /// </summary>
     public static class Liquid
     {
@@ -20,23 +23,27 @@ namespace DotLiquid
         public static readonly string VariableSegment = R.Q(@"[\w\-]");
         public static readonly string VariableStart = R.Q(@"\{\{");
         public static readonly string VariableEnd = R.Q(@"\}\}");
-        public static readonly string VariableIncompleteEnd = R.Q(@"\}\}?");
         public static readonly string QuotedString = R.Q(@"""[^""]*""|'[^']*'");
         public static readonly string QuotedFragment = string.Format(R.Q(@"{0}|(?:[^\s,\|'""]|{0})+"), QuotedString);
         public static readonly string QuotedAssignFragment = string.Format(R.Q(@"{0}|(?:[^\s\|'""]|{0})+"), QuotedString);
-        public static readonly string StrictQuotedFragment = R.Q(@"""[^""]+""|'[^']+'|[^\s\|\:\,]+");
-        public static readonly string FirstFilterArgument = string.Format(R.Q(@"{0}(?:{1})"), FilterArgumentSeparator, StrictQuotedFragment);
-        public static readonly string OtherFilterArgument = string.Format(R.Q(@"{0}(?:{1})"), ArgumentSeparator, StrictQuotedFragment);
-        public static readonly string SpacelessFilter = string.Format(R.Q(@"^(?:'[^']+'|""[^""]+""|[^'""])*{0}(?:{1})(?:{2}(?:{3})*)?"), FilterSeparator, StrictQuotedFragment, FirstFilterArgument, OtherFilterArgument);
-        public static readonly string Expression = string.Format(R.Q(@"(?:{0}(?:{1})*)"), QuotedFragment, SpacelessFilter);
-        public static readonly string TagAttributes = string.Format(R.Q(@"(\w+)\s*\:\s*({0})"), QuotedFragment);
         public static readonly string AnyStartingTag = R.Q(@"\{\{|\{\%");
-        public static readonly string PartialTemplateParser = string.Format(R.Q(@"{0}.*?{1}|{2}.*?{3}"), TagStart, TagEnd, VariableStart, VariableIncompleteEnd);
-        public static readonly string TemplateParser = string.Format(R.Q(@"({0}|{1})"), PartialTemplateParser, AnyStartingTag);
         public static readonly string VariableParser = string.Format(R.Q(@"\[[^\]]+\]|{0}+\??"), VariableSegment);
         public static readonly string LiteralShorthand = R.Q(@"^(?:\{\{\{\s?)(.*?)(?:\s*\}\}\})$");
         public static readonly string CommentShorthand = R.Q(@"^(?:\{\s?\#\s?)(.*?)(?:\s*\#\s?\})$");
         public static bool UseRubyDateFormat = false;
+
+        internal static readonly string DirectorySeparators = @"[\\/]";
+        internal static readonly string LimitRelativePath = @"^(?![\\\/\.])(?:[^<>:;,?""*|\x00-\x1F\/\\]+|[\/\\](?!\.))+(?<!\/)$"; /* Blocks hidden files in linux and directory traversal .. */
+        private static readonly Lazy<Regex> LazyDirectorySeparatorsRegex = new Lazy<Regex>(() => R.C(DirectorySeparators), LazyThreadSafetyMode.ExecutionAndPublication);
+        private static readonly Lazy<Regex> LazyLimitRelativePathRegex = new Lazy<Regex>(() => R.C(LimitRelativePath), LazyThreadSafetyMode.ExecutionAndPublication);
+        private static readonly Lazy<Regex> LazyVariableSegmentRegex = new Lazy<Regex>(() => R.B(R.Q(@"\A\s*(?<Variable>{0}+)\s*\Z"), Liquid.VariableSegment), LazyThreadSafetyMode.ExecutionAndPublication);
+        private static readonly Lazy<Regex> LazyTagAttributesRegex = new Lazy<Regex>(() => R.B(R.Q(@"(\w+)\s*\:\s*({0})"), QuotedFragment), LazyThreadSafetyMode.ExecutionAndPublication);
+
+        internal static Regex DirectorySeparatorsRegex => LazyDirectorySeparatorsRegex.Value;
+        internal static Regex LimitRelativePathRegex => LazyLimitRelativePathRegex.Value;
+        internal static Regex VariableSegmentRegex => LazyVariableSegmentRegex.Value;
+        internal static Regex TagAttributesRegex => LazyTagAttributesRegex.Value;
+
 
         static Liquid()
         {
@@ -56,10 +63,17 @@ namespace DotLiquid
             Template.RegisterTag<Tags.Literal>("literal");
             Template.RegisterTag<Tags.Unless>("unless");
             Template.RegisterTag<Tags.Raw>("raw");
+            Template.RegisterTag<Tags.Increment>("increment");
+            Template.RegisterTag<Tags.Decrement>("decrement");
+            Template.RegisterTag<Tags.Param>("param");
 
             Template.RegisterTag<Tags.Html.TableRow>("tablerow");
 
             Template.RegisterFilter(typeof(StandardFilters));
+
+            // Safe list optional filters so that they can be enabled by Designers.
+            Template.SafelistFilter(typeof(ExtendedFilters));
+            Template.SafelistFilter(typeof(ShopifyFilters));
         }
     }
 }

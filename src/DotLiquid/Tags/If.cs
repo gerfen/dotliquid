@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
 using DotLiquid.Exceptions;
@@ -50,7 +50,7 @@ namespace DotLiquid.Tags
             {
                 foreach (Condition block in Blocks)
                 {
-                    if (block.Evaluate(context))
+                    if (block.Evaluate(context, result.FormatProvider))
                     {
                         RenderAll(block.Attachment, context, result);
                         return;
@@ -79,8 +79,8 @@ namespace DotLiquid.Tags
                 if (!syntaxMatch.Success)
                     throw new SyntaxException(SyntaxHelp);
 
-                Condition condition = new Condition(syntaxMatch.Groups[1].Value,
-                    syntaxMatch.Groups[2].Value, syntaxMatch.Groups[3].Value);
+                Condition condition = new Condition(syntaxMatch.Groups[1].Value.TrimStart('('),
+                    syntaxMatch.Groups[2].Value, syntaxMatch.Groups[3].Value.TrimEnd(')'));
 
                 var conditionCount = 1;
                 // continue to process remaining items in the list backwards, in pairs
@@ -97,8 +97,8 @@ namespace DotLiquid.Tags
                         throw new SyntaxException(TooMuchConditionsHelp);
                     }
 
-                    Condition newCondition = new Condition(expressionMatch.Groups[1].Value,
-                        expressionMatch.Groups[2].Value, expressionMatch.Groups[3].Value);
+                    Condition newCondition = new Condition(expressionMatch.Groups[1].Value.TrimStart('('),
+                        expressionMatch.Groups[2].Value, expressionMatch.Groups[3].Value.TrimEnd(')'));
                     switch (@operator)
                     {
                         case "and":

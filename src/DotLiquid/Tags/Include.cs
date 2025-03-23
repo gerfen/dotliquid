@@ -25,8 +25,7 @@ namespace DotLiquid.Tags
                 _variableName = syntaxMatch.Groups[3].Value;
                 if (_variableName == string.Empty)
                     _variableName = null;
-                _attributes = new Dictionary<string, string>(Template.NamingConvention.StringComparer);
-                R.Scan(markup, Liquid.TagAttributes, (key, value) => _attributes[key] = value);
+                _attributes = Tokenizer.GetAttributes(markup);
             }
             else
                 throw new SyntaxException(Liquid.ResourceManager.GetString("IncludeTagSyntaxException"));
@@ -66,13 +65,13 @@ namespace DotLiquid.Tags
                     ((IEnumerable) variable).Cast<object>().ToList().ForEach(v =>
                     {
                         context[shortenedTemplateName] = v;
-                        partial.Render(result, RenderParameters.FromContext(context));
+                        partial.Render(result, RenderParameters.FromContext(context, result.FormatProvider));
                     });
                     return;
                 }
 
                 context[shortenedTemplateName] = variable;
-                partial.Render(result, RenderParameters.FromContext(context));
+                partial.Render(result, RenderParameters.FromContext(context, result.FormatProvider));
             });
         }
     }

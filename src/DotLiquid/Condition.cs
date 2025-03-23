@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using DotLiquid.Util;
 
@@ -25,12 +26,44 @@ namespace DotLiquid
             { ">", (left, right) => left != null && right != null && Comparer<object>.Default.Compare(left, Convert.ChangeType(right, left.GetType())) == 1 },
             { "<=", (left, right) => left != null && right != null && Comparer<object>.Default.Compare(left, Convert.ChangeType(right, left.GetType())) <= 0 },
             { ">=", (left, right) => left != null && right != null && Comparer<object>.Default.Compare(left, Convert.ChangeType(right, left.GetType())) >= 0 },
-            { "contains", (left, right) => (left is IList) ? ((IList) left).Contains(right) : ((left is string) ? ((string) left).Contains((string) right) : false) },
+            { "contains", (left, right) => ((left is string) ? ((string)left).Contains((string)right) : (left is IEnumerable) ? Any((IEnumerable) left, (element) => element.BackCompatSafeTypeInsensitiveEqual(right)) : false) },
             { "startsWith", (left, right) => (left is IList) ? EqualVariables(((IList) left).OfType<object>().FirstOrDefault(), right) : ((left is string) ? ((string)left).StartsWith((string) right) : false) },
             { "endsWith", (left, right) => (left is IList) ? EqualVariables(((IList) left).OfType<object>().LastOrDefault(), right) : ((left is string) ? ((string)left).EndsWith((string) right) : false) },
-            { "hasKey", (left, right) => (left is IDictionary) ? ((IDictionary) left).Contains(right) : false },
-            { "hasValue", (left, right) => (left is IDictionary) ? ((IDictionary) left).Values.Cast<object>().Contains(right) : false }
+            {
+                "hasKey", (left, right) => {
+                    if (right is null)
+                        return false;
+                    if (left is IDictionary leftDictionary && leftDictionary.Contains(right))
+                        return true;
+                    if (left is IDictionary<string, object> leftDictStringKey && leftDictStringKey.ContainsKey(right.ToString()))
+                        return true;
+                    return false;
+                }
+            },
+            {
+                "hasValue", (left, right) =>
+                {
+                    if (left is IDictionary leftDictionary && leftDictionary.Values.Cast<object>().Contains(right))
+                        return true;
+                    if (left is IDictionary<string, object> leftDictObjectValue && leftDictObjectValue.Values.Contains(right))
+                        return true;
+                    return false;
+                }
+            }
         };
+
+        private static bool Any(IEnumerable enumerable, Func<object, bool> condition)
+        {
+            foreach (var obj in enumerable)
+            {
+                if (condition(obj))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         private string _childRelation;
 
@@ -60,17 +93,17 @@ namespace DotLiquid
         {
         }
 
-        public virtual bool Evaluate(Context context)
+        public virtual bool Evaluate(Context context, IFormatProvider formatProvider)
         {
-            context = context ?? new Context();
+            context = context ?? new Context(formatProvider);
             bool result = InterpretCondition(Left, Right, Operator, context);
 
             switch (_childRelation)
             {
                 case "or":
-                    return result || _childCondition.Evaluate(context);
+                    return result || _childCondition.Evaluate(context, formatProvider);
                 case "and":
-                    return result && _childCondition.Evaluate(context);
+                    return result && _childCondition.Evaluate(context, formatProvider);
                 default:
                     return result;
             }
@@ -102,27 +135,16 @@ namespace DotLiquid
         private static bool EqualVariables(object left, object right)
         {
             if (left is Symbol leftSymbol)
-            { 
+            {
                 return leftSymbol.EvaluationFunction(right);
             }
 
             if (right is Symbol rightSymbol)
-            { 
+            {
                 return rightSymbol.EvaluationFunction(left);
             }
 
-            if (left != null && right != null && left.GetType() != right.GetType())
-            {
-                try
-                {
-                    right = Convert.ChangeType(right, left.GetType());
-                }
-                catch (Exception)
-                {
-                }
-            }
-
-            return Equals(left, right);
+            return left.SafeTypeInsensitiveEqual(right);
         }
 
         private static bool InterpretCondition(string left, string right, string op, Context context)
@@ -133,7 +155,7 @@ namespace DotLiquid
             if (string.IsNullOrEmpty(op))
             {
                 object result = context[left, false];
-                return (result != null && (!(result is bool) || (bool) result));
+                return (result != null && (!(result is bool) || (bool)result));
             }
 
             object leftObject = context[left];
@@ -144,7 +166,7 @@ namespace DotLiquid
                                                                 || Template.NamingConvention.OperatorEquals(opk, op)
                                                      );
             if (opKey == null)
-            { 
+            {
                 throw new Exceptions.ArgumentException(Liquid.ResourceManager.GetString("ConditionUnknownOperatorException"), op);
             }
 
@@ -159,7 +181,7 @@ namespace DotLiquid
             get { return true; }
         }
 
-        public override bool Evaluate(Context context)
+        public override bool Evaluate(Context context, IFormatProvider formatProvider)
         {
             return true;
         }

@@ -1,54 +1,52 @@
-﻿# Build script for dotliquid, see https://www.appveyor.com/docs/appveyor-yml for reference
-version: 2.0.{build}
-image: Visual Studio 2017
-
-cache:
-  - C:\ProgramData\chocolatey\bin -> appveyor.yml
-  - C:\ProgramData\chocolatey\lib -> appveyor.yml
-
-configuration:
-  - Release
-
+# Build script for dotliquid is presently stored securely on AppVeyor.
+# Below is ignored and kept for informational purposes only
+version: 2.2.{build}
+image: Visual Studio 2022
+configuration: Release
 assembly_info:
   patch: true
   file: AssemblyInfo.*
-  assembly_version: "{version}"
-  assembly_file_version: "{version}"
-  assembly_informational_version: "{version}-$(APPVEYOR_REPO_COMMIT)"
-
+  assembly_version: '{version}'
+  assembly_file_version: '{version}'
+  assembly_informational_version: '{version}-$(APPVEYOR_REPO_COMMIT)'
 install:
-  - cmd: choco install opencover.portable -y
-  - cmd: choco install codecov -y
-  - cmd: dotnet restore src
+- cmd: >-
+    choco install opencover.portable -y
 
-build:
-  verbosity: minimal # quiet|minimal|normal|detailed
-  project: src/DotLiquid.sln
-  publish_nuget: true
-  publish_nuget_symbols: true
+    choco install codecov -y
 
-after_build:
-  - cmd: md build\pkg
-  - cmd: nuget pack src/DotLiquid/DotLiquid.nuspec -Symbols -Version "%APPVEYOR_BUILD_VERSION%" -OutputDirectory build\pkg
+    choco install dotnetcore-runtime.install --version=1.1.13 --allow-downgrade -y
 
-test_script:
-  - opencover.console -target:"C:\Tools\NUnit3\nunit3-console.exe" -targetargs:"src\DotLiquid.Tests\bin\Release\net451\DotLiquid.Tests.dll --where=cat!=windows --result=TestsResults.xml;format=AppVeyor" -output:TestsCoverage.xml -filter:"+[DotLiquid]*" -register:user -returntargetcode
-  - codecov -f TestsCoverage.xml
+    choco install dotnetcore-runtime.install --version=2.1.30 -y
 
-artifacts:
-- path: build\pkg\*.nupkg
-  name: Nuget Package
-
-- path: TestsCoverage.xml
-
+    dotnet restore src/DotLiquid.sln
+cache:
+- C:\ProgramData\chocolatey\bin -> appveyor.yml
+- C:\ProgramData\chocolatey\lib -> appveyor.yml
 nuget:
   project_feed: true
+build:
+  project: src/DotLiquid.sln
+  verbosity: minimal
+after_build:
+- ps: >-
+    New-Item -Path build\pkg -ItemType Directory
 
+    nuget pack src/DotLiquid/DotLiquid.nuspec -Symbols -SymbolPackageFormat snupkg -Version "$($env:APPVEYOR_BUILD_VERSION)" -OutputDirectory build\pkg
+test_script:
+- cmd: >-
+    opencover.console -target:"C:\Program Files\dotnet\dotnet.exe" -targetargs:"test src\DotLiquid.Tests\DotLiquid.Tests.csproj /clp:ErrorsOnly" -output:TestsCoverage.xml -filter:"+[DotLiquid]*" -register:user -returntargetcode -oldstyle
+    
+    codecov -f TestsCoverage.xml
+artifacts:
+- path: build\pkg\*.*nupkg
+  name: Nuget Package
+- path: TestsCoverage.xml
 deploy:
 - provider: NuGet
   api_key:
-    secure: LrIeQprS+E5FzLkdKGYIYHXy/86Kt8YVhTa4J/VhLzGUO+yXnqI+GxDR+K5Wj/VL
+    secure: ****************************************************************
   skip_symbols: false
-  artifact: /.*\.nupkg/
+  artifact: /build/.*\.s?nupkg/
   on:
     branch: master
